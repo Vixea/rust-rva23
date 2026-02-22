@@ -1,0 +1,94 @@
+name: Build and install Rust for riscv64a23-unknown-linux-gnu
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+env:
+  INSTALL_PREFIX: ${{ github.workspace }}/artifacts
+  INSTALL_SYSCONFDIR: ${{ github.workspace }}/artifacts/etc
+
+jobs:
+  build-and-install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install host deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl git python3 python3-setuptools pkg-config libssl-dev ca-certificates
+
+      - name: Clone rust-lang/rust
+        run: |
+          git clone https://github.com/rust-lang/rust.git --depth 10000
+          cd rust
+          git submodule update --init --recursive
+
+      - name: Install riscv cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu
+
+      - name: Prepare config.toml
+        run: |
+          cd rust
+          cat << EOF > config.toml
+          [build]
+          build = "x86_64-unknown-linux-gnu"
+          host = ["x86_64-unknown-linux-gnu"]
+          target = ["riscv64a23-unknown-linux-gnu"]
+          docs = false
+          compiler-docs = false
+          extended = true
+
+          [install]
+          prefix = "/home/runner/work/rust-rva23/rust-rva23/artifacts"
+          sysconfdir = "/home/runner/work/rust-rva23/rust-rva23/artifacts/etc"
+
+          [rust]
+          codegen-units = 1
+          debug-assertions = false
+          optimize = true
+
+          [target.riscv64a23-unknown-linux-gnu]
+          crt-static = false
+          linker = "riscv64-linux-gnu-gcc"
+          cc = "riscv64-linux-gnu-gcc"
+          cxx = "riscv64-linux-gnu-g++"
+          ar = "riscv64-linux-gnu-ar"
+          ranlib = "riscv64-linux-gnu-ranlib"
+          EOF
+          echo "Config written. install prefix=${INSTALL_PREFIX}"
+
+      - name: Build std and compiler for riscv target
+        run: |
+          cd rust
+          # build standard library for target and the compiler (stage1)
+          ./x.py build --target riscv64a23-unknown-linux-gnu library/std compiler --stage 2 --jobs 2
+
+      - name: Install into custom prefix
+        run: |
+          cd rust
+          # Run install to the prefix set in config.toml
+          sudo rm -rf "${INSTALL_PREFIX}"
+          mkdir -p "${INSTALL_PREFIX}"
+          sudo rm -rf "${INSTALL_SYSCONFDIR}"
+          mkdir -p "${INSTALL_SYSCONFDIR}"
+          # x.py install obeys [install] prefix; install stage1 compiler and std
+          ./x.py install --target riscv64a23-unknown-linux-gnu --jobs 2
+
+      - name: Show installed top-level
+        run: |
+          echo "Contents of install prefix:"
+          sudo ls -la "${INSTALL_PREFIX}" || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-riscv-install
+          path: ${{ env.INSTALL_PREFIX }}
